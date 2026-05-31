@@ -300,7 +300,11 @@ function normalizeEvidenceInput(url: string, sourceType: SourceType) {
 
 function hydrateEvidence(rawEvidence: Partial<Evidence> & { timestamp?: string }): Evidence {
   const fallbackTimestamp = rawEvidence.timestamp ?? rawEvidence.addedAt ?? new Date().toISOString();
-  const normalizedXPost = rawEvidence.xPost ?? parseXPost(rawEvidence.canonicalUrl ?? rawEvidence.url ?? "");
+  const xCandidate = rawEvidence.canonicalUrl ?? rawEvidence.url ?? "";
+  const shouldParseXPost = Boolean(rawEvidence.xPost) || rawEvidence.sourceType === "x" || /(x|twitter)\.com/.test(xCandidate);
+  const normalizedXPost = rawEvidence.xPost ?? (shouldParseXPost ? parseXPost(xCandidate) : null);
+  const publishedAtCandidate = rawEvidence.publishedAt ?? fallbackTimestamp;
+  const normalizedPublishedAt = new Date(publishedAtCandidate).getTime() > Date.now() ? fallbackTimestamp : publishedAtCandidate;
   return {
     id: rawEvidence.id ?? uid("evidence"),
     url: rawEvidence.url ?? "",
@@ -309,7 +313,7 @@ function hydrateEvidence(rawEvidence: Partial<Evidence> & { timestamp?: string }
     citation: rawEvidence.citation ?? "",
     submitter: rawEvidence.submitter ?? "anonymous",
     addedAt: rawEvidence.addedAt ?? fallbackTimestamp,
-    publishedAt: rawEvidence.publishedAt ?? fallbackTimestamp,
+    publishedAt: normalizedPublishedAt,
     capturedAt: rawEvidence.capturedAt ?? fallbackTimestamp,
     votes: rawEvidence.votes ?? 0,
     sourceType: rawEvidence.sourceType ?? (normalizedXPost ? "x" : "other"),
@@ -542,15 +546,18 @@ export default function Home() {
 
   const timelineRange = useMemo(() => {
     if (timelineEvents.length === 0) {
-      return { min: sessionNow, max: sessionNow, cutoff: sessionNow };
+      return { min: sessionNow, max: sessionNow, cutoff: sessionNow, isSinglePoint: true };
     }
     const min = new Date(timelineEvents[0].timestamp).getTime();
-    const rawMax = new Date(timelineEvents.at(-1)?.timestamp ?? timelineEvents[0].timestamp).getTime();
-    const max = rawMax === min ? min + DAY_IN_MS : rawMax;
+    const max = new Date(timelineEvents.at(-1)?.timestamp ?? timelineEvents[0].timestamp).getTime();
+    if (max === min) {
+      return { min, max, cutoff: min, isSinglePoint: true };
+    }
     return {
       min,
       max,
       cutoff: min + (max - min) * (timelineProgress / 100),
+      isSinglePoint: false,
     };
   }, [sessionNow, timelineEvents, timelineProgress]);
 
@@ -1184,7 +1191,14 @@ export default function Home() {
           </label>
           <label>
             Timeline playback
-            <input type="range" min={0} max={100} value={timelineProgress} onChange={(event) => setTimelineProgress(Number(event.target.value))} />
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={timelineProgress}
+              disabled={timelineRange.isSinglePoint}
+              onChange={(event) => setTimelineProgress(Number(event.target.value))}
+            />
             <span>{formatDate(new Date(timelineRange.cutoff).toISOString())}</span>
           </label>
         </div>
