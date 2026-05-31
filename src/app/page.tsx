@@ -300,6 +300,7 @@ function normalizeEvidenceInput(url: string, sourceType: SourceType) {
 
 function hydrateEvidence(rawEvidence: Partial<Evidence> & { timestamp?: string }): Evidence {
   const fallbackTimestamp = rawEvidence.timestamp ?? rawEvidence.addedAt ?? new Date().toISOString();
+  const normalizedXPost = rawEvidence.xPost ?? parseXPost(rawEvidence.canonicalUrl ?? rawEvidence.url ?? "");
   return {
     id: rawEvidence.id ?? uid("evidence"),
     url: rawEvidence.url ?? "",
@@ -311,10 +312,10 @@ function hydrateEvidence(rawEvidence: Partial<Evidence> & { timestamp?: string }
     publishedAt: rawEvidence.publishedAt ?? fallbackTimestamp,
     capturedAt: rawEvidence.capturedAt ?? fallbackTimestamp,
     votes: rawEvidence.votes ?? 0,
-    sourceType: rawEvidence.sourceType ?? (parseXPost(rawEvidence.url ?? "") ? "x" : "other"),
+    sourceType: rawEvidence.sourceType ?? (normalizedXPost ? "x" : "other"),
     reliability: rawEvidence.reliability ?? "medium",
     archiveNote: rawEvidence.archiveNote ?? "",
-    xPost: rawEvidence.xPost ?? parseXPost(rawEvidence.canonicalUrl ?? rawEvidence.url ?? ""),
+    xPost: normalizedXPost,
     disputes: Array.isArray(rawEvidence.disputes)
       ? rawEvidence.disputes.map((dispute) => ({
           id: dispute.id ?? uid("dispute"),
@@ -419,6 +420,11 @@ export default function Home() {
   });
   const [positions, setPositions] = useState<Record<string, Position>>({});
   const [sessionNow] = useState(() => Date.now());
+
+  function resetGraphView() {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }
   const [query, setQuery] = useState("");
   const [entityType, setEntityType] = useState<EntityType>("person");
   const [entityName, setEntityName] = useState("");
@@ -539,7 +545,8 @@ export default function Home() {
       return { min: sessionNow, max: sessionNow, cutoff: sessionNow };
     }
     const min = new Date(timelineEvents[0].timestamp).getTime();
-    const max = new Date(timelineEvents.at(-1)?.timestamp ?? timelineEvents[0].timestamp).getTime();
+    const rawMax = new Date(timelineEvents.at(-1)?.timestamp ?? timelineEvents[0].timestamp).getTime();
+    const max = rawMax === min ? min + DAY_IN_MS : rawMax;
     return {
       min,
       max,
@@ -766,6 +773,8 @@ export default function Home() {
 
     const normalized = normalizeEvidenceInput(evidenceUrl, evidenceSourceType);
     const now = new Date().toISOString();
+    const publishedAt = isoFromLocalInput(evidencePublishedAt);
+    const safePublishedAt = new Date(publishedAt).getTime() > new Date(now).getTime() ? now : publishedAt;
     const nextEvidence: Evidence = {
       id: uid("evidence"),
       url: normalized.url,
@@ -774,7 +783,7 @@ export default function Home() {
       citation: evidenceCitation.trim(),
       submitter: evidenceSubmitter.trim() || "anonymous",
       addedAt: now,
-      publishedAt: isoFromLocalInput(evidencePublishedAt),
+      publishedAt: safePublishedAt,
       capturedAt: now,
       votes: 0,
       sourceType: normalized.sourceType,
@@ -1112,10 +1121,7 @@ export default function Home() {
             <button type="button" onClick={() => setZoom((current) => clamp(current - 0.15, 0.6, 2.4))}>
               Zoom out
             </button>
-            <button type="button" onClick={() => {
-              setZoom(1);
-              setPan({ x: 0, y: 0 });
-            }}>
+            <button type="button" onClick={resetGraphView}>
               Reset view
             </button>
           </div>
