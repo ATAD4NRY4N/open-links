@@ -204,7 +204,7 @@ function sourceTypeScore(sourceType: SourceType) {
   }
 }
 
-function recencyScore(publishedAt: string, now = Date.now()) {
+function recencyScore(publishedAt: string, now: number) {
   const ageDays = Math.max(0, (now - new Date(publishedAt).getTime()) / DAY_IN_MS);
   if (ageDays <= 30) return 1.1;
   if (ageDays <= 180) return 1;
@@ -220,12 +220,12 @@ function disputePenalty(disputes: Dispute[]) {
   return 0.92;
 }
 
-function evidenceStrength(evidence: Evidence, now = Date.now()) {
+function evidenceStrength(evidence: Evidence, now: number) {
   const voteFactor = clamp(1 + evidence.votes * 0.08, 0.5, 1.4);
   return reliabilityScore(evidence.reliability) * sourceTypeScore(evidence.sourceType) * recencyScore(evidence.publishedAt, now) * disputePenalty(evidence.disputes) * voteFactor;
 }
 
-function computeLinkMetrics(link: Link, evidence: Evidence[], now = Date.now()) {
+function computeLinkMetrics(link: Link, evidence: Evidence[], now: number) {
   if (evidence.length === 0) {
     return {
       strength: 0,
@@ -391,8 +391,8 @@ function isoFromLocalInput(value: string) {
   return value ? new Date(value).toISOString() : new Date().toISOString();
 }
 
-function ageInDays(timestamp: string) {
-  return Math.max(0, Math.floor((Date.now() - new Date(timestamp).getTime()) / DAY_IN_MS));
+function ageInDays(timestamp: string, now: number) {
+  return Math.max(0, Math.floor((now - new Date(timestamp).getTime()) / DAY_IN_MS));
 }
 
 function buildEntityPositions(entities: Entity[], current: Record<string, Position>) {
@@ -418,6 +418,7 @@ export default function Home() {
     return hydrateBoard(localStorage.getItem(STORAGE_KEY));
   });
   const [positions, setPositions] = useState<Record<string, Position>>({});
+  const [sessionNow] = useState(() => Date.now());
   const [query, setQuery] = useState("");
   const [entityType, setEntityType] = useState<EntityType>("person");
   const [entityName, setEntityName] = useState("");
@@ -466,15 +467,9 @@ export default function Home() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(board));
   }, [board]);
 
-  useEffect(() => {
-    setPositions((current) => buildEntityPositions(board.entities, current));
-  }, [board.entities]);
 
-  useEffect(() => {
-    if (!selectedEntityId && board.entities[0]) {
-      setSelectedEntityId(board.entities[0].id);
-    }
-  }, [board.entities, selectedEntityId]);
+  const graphPositions = useMemo(() => buildEntityPositions(board.entities, positions), [board.entities, positions]);
+  const activeSelectedEntityId = selectedEntityId || board.entities[0]?.id || "";
 
   const evidenceTargets = useMemo(
     () =>
@@ -541,8 +536,7 @@ export default function Home() {
 
   const timelineRange = useMemo(() => {
     if (timelineEvents.length === 0) {
-      const now = Date.now();
-      return { min: now, max: now, cutoff: now };
+      return { min: sessionNow, max: sessionNow, cutoff: sessionNow };
     }
     const min = new Date(timelineEvents[0].timestamp).getTime();
     const max = new Date(timelineEvents.at(-1)?.timestamp ?? timelineEvents[0].timestamp).getTime();
@@ -551,7 +545,7 @@ export default function Home() {
       max,
       cutoff: min + (max - min) * (timelineProgress / 100),
     };
-  }, [timelineEvents, timelineProgress]);
+  }, [sessionNow, timelineEvents, timelineProgress]);
 
   const visibleLinks = useMemo<VisibleLink[]>(() => {
     const matchingEntityIds = new Set(filteredEntities.map((entity) => entity.id));
@@ -564,14 +558,14 @@ export default function Home() {
           const publishedMs = new Date(entry.publishedAt).getTime();
           if (publishedMs > timelineRange.cutoff) return false;
           if (sourceFilter !== "all" && entry.sourceType !== sourceFilter) return false;
-          if (recencyDays !== Infinity && ageInDays(entry.publishedAt) > recencyDays) return false;
+          if (recencyDays !== Infinity && ageInDays(entry.publishedAt, sessionNow) > recencyDays) return false;
           if (contestedOnly && !entry.disputes.some((dispute) => dispute.status !== "resolved")) return false;
           return true;
         });
         return {
           link,
           evidence,
-          metrics: computeLinkMetrics(link, evidence),
+          metrics: computeLinkMetrics(link, evidence, sessionNow),
         };
       })
       .filter(({ link, evidence }) => {
@@ -579,7 +573,7 @@ export default function Home() {
         if (!query.trim()) return true;
         return matchingEntityIds.has(link.sourceEntityId) || matchingEntityIds.has(link.targetEntityId);
       });
-  }, [board.links, contestedOnly, filteredEntities, minConfidenceFilter, query, recencyDaysFilter, sourceFilter, timelineRange.cutoff]);
+  }, [board.links, contestedOnly, filteredEntities, minConfidenceFilter, query, recencyDaysFilter, sessionNow, sourceFilter, timelineRange.cutoff]);
 
   const visibleEntityIds = useMemo(() => {
     const ids = new Set<string>();
@@ -590,7 +584,7 @@ export default function Home() {
     if (query.trim()) {
       filteredEntities.forEach((entity) => ids.add(entity.id));
     }
-    if (!selectedEntityId || neighborhoodDepth === "all") return ids;
+    if (!activeSelectedEntityId || neighborhoodDepth === "all") return ids;
 
     const depth = Number(neighborhoodDepth);
     const adjacency = new Map<string, Set<string>>();
@@ -601,8 +595,8 @@ export default function Home() {
       adjacency.get(link.targetEntityId)?.add(link.sourceEntityId);
     });
 
-    const focused = new Set<string>([selectedEntityId]);
-    let frontier = [selectedEntityId];
+    const focused = new Set<string>([activeSelectedEntityId]);
+    let frontier = [activeSelectedEntityId];
     for (let step = 0; step < depth; step += 1) {
       const next: string[] = [];
       frontier.forEach((entityId) => {
@@ -616,7 +610,7 @@ export default function Home() {
       frontier = next;
     }
     return focused;
-  }, [filteredEntities, neighborhoodDepth, query, selectedEntityId, visibleLinks]);
+  }, [activeSelectedEntityId, filteredEntities, neighborhoodDepth, query, visibleLinks]);
 
   const graphLinks = useMemo(
     () =>
@@ -632,19 +626,21 @@ export default function Home() {
   const selectedCaseLinks = useMemo(
     () =>
       graphLinks.filter(
-        ({ link }) => selectedEntityId && (link.sourceEntityId === selectedEntityId || link.targetEntityId === selectedEntityId),
+        ({ link }) =>
+          activeSelectedEntityId &&
+          (link.sourceEntityId === activeSelectedEntityId || link.targetEntityId === activeSelectedEntityId),
       ),
-    [graphLinks, selectedEntityId],
+    [activeSelectedEntityId, graphLinks],
   );
 
   const clusterOverlays = useMemo(() => {
     return ENTITY_TYPE_OPTIONS.flatMap((type) => {
-      const nodes = visibleEntities.filter((entity) => entity.type === type && positions[entity.id]);
+      const nodes = visibleEntities.filter((entity) => entity.type === type && graphPositions[entity.id]);
       if (nodes.length === 0) return [];
       const centroid = nodes.reduce(
         (accumulator, entity) => ({
-          x: accumulator.x + positions[entity.id].x,
-          y: accumulator.y + positions[entity.id].y,
+          x: accumulator.x + graphPositions[entity.id].x,
+          y: accumulator.y + graphPositions[entity.id].y,
         }),
         { x: 0, y: 0 },
       );
@@ -655,14 +651,14 @@ export default function Home() {
       const radius = Math.max(
         70,
         ...nodes.map((entity) => {
-          const dx = positions[entity.id].x - center.x;
-          const dy = positions[entity.id].y - center.y;
+          const dx = graphPositions[entity.id].x - center.x;
+          const dy = graphPositions[entity.id].y - center.y;
           return Math.sqrt(dx * dx + dy * dy) + 48;
         }),
       );
       return [{ type, center, radius, count: nodes.length }];
     });
-  }, [positions, visibleEntities]);
+  }, [graphPositions, visibleEntities]);
 
   const stats = useMemo(() => {
     const supportedLinks = board.links.filter((link) => link.evidence.length > 0).length;
@@ -939,12 +935,13 @@ export default function Home() {
       return;
     }
 
+    const entityId = dragRef.current.entityId;
     const rect = svgRef.current.getBoundingClientRect();
     const x = (event.clientX - rect.left - pan.x) / zoom;
     const y = (event.clientY - rect.top - pan.y) / zoom;
     setPositions((current) => ({
       ...current,
-      [dragRef.current?.entityId ?? ""]: { x, y },
+      [entityId]: { x, y },
     }));
   }
 
@@ -1131,7 +1128,7 @@ export default function Home() {
           </label>
           <label>
             Case focus
-            <select value={selectedEntityId} onChange={(event) => setSelectedEntityId(event.target.value)}>
+            <select value={activeSelectedEntityId} onChange={(event) => setSelectedEntityId(event.target.value)}>
               <option value="">No focus</option>
               {board.entities.map((entity) => (
                 <option key={entity.id} value={entity.id}>
@@ -1208,8 +1205,8 @@ export default function Home() {
               ))}
 
               {graphLinks.map(({ link, metrics }) => {
-                const source = positions[link.sourceEntityId];
-                const target = positions[link.targetEntityId];
+                const source = graphPositions[link.sourceEntityId];
+                const target = graphPositions[link.targetEntityId];
                 if (!source || !target) return null;
                 const midX = (source.x + target.x) / 2;
                 const midY = (source.y + target.y) / 2;
@@ -1233,9 +1230,9 @@ export default function Home() {
               })}
 
               {visibleEntities.map((entity) => {
-                const position = positions[entity.id];
+                const position = graphPositions[entity.id];
                 if (!position) return null;
-                const selected = entity.id === selectedEntityId;
+                const selected = entity.id === activeSelectedEntityId;
                 return (
                   <g key={entity.id}>
                     <circle
@@ -1259,10 +1256,10 @@ export default function Home() {
 
           <div style={styles.sidePanel}>
             <h3>Case view</h3>
-            {selectedEntityId ? (
+            {activeSelectedEntityId ? (
               <>
                 <p>
-                  Focused entity: <strong>{entityLabel(selectedEntityId, board.entities)}</strong>
+                  Focused entity: <strong>{entityLabel(activeSelectedEntityId, board.entities)}</strong>
                 </p>
                 <p style={styles.muted}>Neighborhood expansion lets investigators isolate one claim or entity and expand outward step by step.</p>
                 <ul style={styles.listPlain}>
@@ -1345,7 +1342,7 @@ export default function Home() {
                           <span>Published: {formatDate(item.publishedAt)}</span>
                           <span>Captured: {formatDate(item.capturedAt)}</span>
                           <span>Votes: {item.votes}</span>
-                          <span>Strength contribution: {evidenceStrength(item).toFixed(2)}</span>
+                          <span>Strength contribution: {evidenceStrength(item, sessionNow).toFixed(2)}</span>
                         </div>
                         {item.xPost ? (
                           <div style={styles.metaGrid}>
