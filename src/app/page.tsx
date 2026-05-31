@@ -56,7 +56,7 @@ const defaultData: BoardData = {
 };
 
 function uid(prefix: string) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}_${crypto.randomUUID()}`;
 }
 
 function formatDate(value: string) {
